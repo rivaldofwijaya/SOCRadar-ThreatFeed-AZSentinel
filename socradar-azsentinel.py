@@ -128,30 +128,30 @@ def main():
     }
     # get access token for graph api
     # The pattern to acquire a token looks like this.
-    # result = None
-    # headers = ''
-    # graph_api_token = ""
+    result = None
+    headers = ''
+    graph_api_token = ""
 
     # # Firstly, looks up a token from cache
     # # Since we are looking for token for the current app, NOT for an end user,
     # # notice we give account parameter as None.
-    # app = get_graph_api_acess_token()
-    # result = app.acquire_token_silent(scope, account=None)
-    # if not result:
-    #     logging.info("No suitable token exists in cache. Let's get a new one from AAD.")
-    #     result = app.acquire_token_for_client(scopes=scope)
-    # if "access_token" in result:
-    #     graph_api_token = result["access_token"]
-    #     headers = {
-    #         "Content-Type": "application/json",
-    #         "Authorization": f"Bearer {graph_api_token}"
-    #     }
-    # else:
-    #     logger.warning("No suitable token exists. Terminating the script.")
-    #     logger.warning(result.get("error"))
-    #     logger.warning(result.get("error_description"))
-    #     logger.warning(result.get("correlation_id"))  # You may need this when reporting a bug
-    #     quit()
+    app = get_graph_api_acess_token()
+    result = app.acquire_token_silent(scope, account=None)
+    if not result:
+        logging.info("No suitable token exists in cache. Let's get a new one from AAD.")
+        result = app.acquire_token_for_client(scopes=scope)
+    if "access_token" in result:
+        graph_api_token = result["access_token"]
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {graph_api_token}"
+        }
+    else:
+        logger.warning("No suitable token exists. Terminating the script.")
+        logger.warning(result.get("error"))
+        logger.warning(result.get("error_description"))
+        logger.warning(result.get("correlation_id"))  # You may need this when reporting a bug
+        quit()
     for threatfeed_uuid, threatfeed_name in threatfeed_collection_dict.items():
         #if threatfeed_name == "SOCRadar-Recommended-Phishing-Global":
         print(threatfeed_name)
@@ -159,56 +159,56 @@ def main():
             socradar_threat_feed_response = requests.get(f'https://platform.socradar.com/api/threat/intelligence/feed_list/{threatfeed_uuid}.json?key={socradar_api_key}&v=2')
             if socradar_threat_feed_response.status_code < 400:
                 file_path_to_save = f'{socradar_threat_feed_folder}/{threatfeed_name}.log'
-                # azuresentinel_feed_list = []
-                # count = 0
-                # threat_chunk_count = int(len(socradar_threat_feed_response.json())/100) + 1
-                # #print(len(socradar_threat_feed_response.json()))
-                # #print(threat_chunk_count)
-                # for feed_item in socradar_threat_feed_response.json():
-                #     azuresentinel_feed = build_azuresentinel_feed(feed_item, threatfeed_name)
-                #     if azuresentinel_feed:
-                #         azuresentinel_feed_list.append(azuresentinel_feed)
-                #     if len(azuresentinel_feed_list) == 100:
-                #         count += 1
-                #         azuresentinel_feed_dict_to_submit = { 'value' : azuresentinel_feed_list }
-                #         '''
-                #         azuresentinel_feed_file_path = f"{socradar_threat_feed_folder}/{threatfeed_name}-{count}.log"
-                #         with open(azuresentinel_feed_file_path, 'w') as f:
-                #             f.write(json.dumps(azuresentinel_feed_dict_to_submit, indent=2))
-                #         '''
-                #         payload = json.dumps(azuresentinel_feed_dict_to_submit)
-                #         response = requests.post(f"https://{graph_server}/beta/security/tiIndicators/submitTiIndicators", headers=headers, data=payload, verify=verify_ssl)
-                #         if response.status_code == 200:
-                #             logger.info(f'{threatfeed_name} has been fetched from SOCRadar and chunk {count} has submitted to Azure Sentinel: {response.url}')
-                #             logger.info(f'Status Code: \n{response.status_code}')
-                #             logger.info(f'Url: \n{response.url}')
-                #         else:
-                #             logger.info(f'{threatfeed_name} has been fetched from SOCRadar and error on chunk {count} submission to Azure Sentinel')
-                #             logger.info(f'Status Code: \n{response.status_code}')
-                #             logger.info(f'Url: \n{response.url}')
-                #             logger.info(f'Response: \n{response.text}')
-                #         azuresentinel_feed_list = []
-                # # to get the residual feeds counted below 100
-                # if count < threat_chunk_count:
-                #     count += 1
-                #     azuresentinel_feed_dict_to_submit = { 'value' : azuresentinel_feed_list }
-                #     #print(len(azuresentinel_feed_list))
-                #     '''
-                #     azuresentinel_feed_file_path = f"{socradar_threat_feed_folder}/{threatfeed_name}-{count}.log"
-                #     with open(azuresentinel_feed_file_path, 'w') as f:
-                #         f.write(json.dumps(azuresentinel_feed_dict_to_submit, indent=2))
-                #     '''
-                #     payload = json.dumps(azuresentinel_feed_dict_to_submit)
-                #     response = requests.post(f"https://{graph_server}/beta/security/tiIndicators/submitTiIndicators", headers=headers, data=payload, verify=verify_ssl)
-                #     if response.status_code == 200:
-                #         logger.info(f'{threatfeed_name} has been fetched from SOCRadar and chunk {count} has submitted to Azure Sentinel: {response.url}')
-                #         logger.info(f'Status Code: \n{response.status_code}')
-                #         logger.info(f'Url: \n{response.url}')
-                #     else:
-                #         logger.info(f'{threatfeed_name} has been fetched from SOCRadar and error on chunk {count} submission to Azure Sentinel')
-                #         logger.info(f'Status Code: \n{response.status_code}')
-                #         logger.info(f'Url: \n{response.url}')
-                #         logger.info(f'Response: \n{response.text}')
+                azuresentinel_feed_list = []
+                count = 0
+                threat_chunk_count = int(len(socradar_threat_feed_response.json())/100) + 1
+                #print(len(socradar_threat_feed_response.json()))
+                #print(threat_chunk_count)
+                for feed_item in socradar_threat_feed_response.json():
+                    azuresentinel_feed = build_azuresentinel_feed(feed_item, threatfeed_name)
+                    if azuresentinel_feed:
+                        azuresentinel_feed_list.append(azuresentinel_feed)
+                    if len(azuresentinel_feed_list) == 100:
+                        count += 1
+                        azuresentinel_feed_dict_to_submit = { 'value' : azuresentinel_feed_list }
+                        '''
+                        azuresentinel_feed_file_path = f"{socradar_threat_feed_folder}/{threatfeed_name}-{count}.log"
+                        with open(azuresentinel_feed_file_path, 'w') as f:
+                            f.write(json.dumps(azuresentinel_feed_dict_to_submit, indent=2))
+                        '''
+                        payload = json.dumps(azuresentinel_feed_dict_to_submit)
+                        response = requests.post(f"https://{graph_server}/beta/security/tiIndicators/submitTiIndicators", headers=headers, data=payload, verify=verify_ssl)
+                        if response.status_code == 200:
+                            logger.info(f'{threatfeed_name} has been fetched from SOCRadar and chunk {count} has submitted to Azure Sentinel: {response.url}')
+                            logger.info(f'Status Code: \n{response.status_code}')
+                            logger.info(f'Url: \n{response.url}')
+                        else:
+                            logger.info(f'{threatfeed_name} has been fetched from SOCRadar and error on chunk {count} submission to Azure Sentinel')
+                            logger.info(f'Status Code: \n{response.status_code}')
+                            logger.info(f'Url: \n{response.url}')
+                            logger.info(f'Response: \n{response.text}')
+                        azuresentinel_feed_list = []
+                # to get the residual feeds counted below 100
+                if count < threat_chunk_count:
+                    count += 1
+                    azuresentinel_feed_dict_to_submit = { 'value' : azuresentinel_feed_list }
+                    #print(len(azuresentinel_feed_list))
+                    '''
+                    azuresentinel_feed_file_path = f"{socradar_threat_feed_folder}/{threatfeed_name}-{count}.log"
+                    with open(azuresentinel_feed_file_path, 'w') as f:
+                        f.write(json.dumps(azuresentinel_feed_dict_to_submit, indent=2))
+                    '''
+                    payload = json.dumps(azuresentinel_feed_dict_to_submit)
+                    response = requests.post(f"https://{graph_server}/beta/security/tiIndicators/submitTiIndicators", headers=headers, data=payload, verify=verify_ssl)
+                    if response.status_code == 200:
+                        logger.info(f'{threatfeed_name} has been fetched from SOCRadar and chunk {count} has submitted to Azure Sentinel: {response.url}')
+                        logger.info(f'Status Code: \n{response.status_code}')
+                        logger.info(f'Url: \n{response.url}')
+                    else:
+                        logger.info(f'{threatfeed_name} has been fetched from SOCRadar and error on chunk {count} submission to Azure Sentinel')
+                        logger.info(f'Status Code: \n{response.status_code}')
+                        logger.info(f'Url: \n{response.url}')
+                        logger.info(f'Response: \n{response.text}')
 
                 with open(file_path_to_save, 'w') as threat_file:
                     threat_file.write(json.dumps(socradar_threat_feed_response.json(), indent=2))
