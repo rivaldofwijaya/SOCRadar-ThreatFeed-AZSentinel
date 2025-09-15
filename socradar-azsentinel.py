@@ -5,118 +5,131 @@ import logging
 import json
 from datetime import datetime, timedelta
 import msal
+from dotenv import load_dotenv
 
-socradar_api_key = "client_api_key"
-socradar_company_id = "client_company_id"
-azure_tenant_id = "azure-tenant-id" 
-client_id = "app-client-id" 
-secret = "client-secret-value" 
+# Load environment variables from a .env file
+load_dotenv()
 
-graph_server = "graph.microsoft.com" 
-azure_authority = f"https://login.microsoftonline.com/{azure_tenant_id}" 
-scope = [ "https://graph.microsoft.com/.default" ] 
-expire_date_offset = 7
-verify_ssl = True
+# Set up logging early to capture all events
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('socradar_threat_feed_integration_logger')
 
+# --- Configuration using Environment Variables ---
+try:
+    SOCRADAR_API_KEY = os.environ['SOCRADAR_API_KEY']
+    AZURE_TENANT_ID = os.environ['AZURE_TENANT_ID']
+    CLIENT_ID = os.environ['CLIENT_ID']
+    CLIENT_SECRET = os.environ['CLIENT_SECRET']
+except KeyError as e:
+    logger.error(f"Missing required environment variable: {e}")
+    raise SystemExit(f"Configuration error: Missing environment variable {e}")
 
-def get_graph_api_acess_token():
-    # Create a preferably long-lived app instance which maintains a token cache.
+# --- Constants ---
+GRAPH_SERVER = "graph.microsoft.com"
+AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}"
+SCOPE = ["https://graph.microsoft.com/.default"]
+EXPIRE_DATE_OFFSET = 7
+VERIFY_SSL = True
+THREAT_FEED_FOLDER = os.environ.get('SOCRADAR_THREAT_FEED_INTEGRATION_FOLDER', './Threats-SOCRadar')
+OLD_FILE_REMOVAL_THRESHOLD = int(os.environ.get('SOCRADAR_THREAT_FEED_OLD_FILE_REMOVAL_THRESHOLD', 5))
+
+# --- Regular Expressions for Input Validation ---
+REGEX_IPV4 = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+REGEX_MD5 = re.compile(r"^([a-fA-F\d]{32})$")
+REGEX_SHA1 = re.compile(r"^([a-fA-F\d]{40})$")
+REGEX_SHA256 = re.compile(r"^([a-fA-F\d]{64})$")
+
+# --- Functions ---
+
+def get_graph_api_access_token():
+    """Acquires a Microsoft Graph API access token using MSAL."""
     app = msal.ConfidentialClientApplication(
-        client_id, authority=azure_authority,
-        client_credential=secret,
-        # token_cache=...  # Default cache is in memory only.
-                           # You can learn how to use SerializableTokenCache from
-                           # https://msal-python.rtfd.io/en/latest/#msal.SerializableTokenCache
-        )
+        CLIENT_ID,
+        authority=AZURE_AUTHORITY,
+        client_credential=CLIENT_SECRET,
+    )
+    result = app.acquire_token_silent(SCOPE, account=None)
+    if not result:
+        logger.info("No suitable token in cache. Acquiring a new one.")
+        result = app.acquire_token_for_client(scopes=SCOPE)
+    
+    if "access_token" not in result:
+        error_msg = f"Failed to acquire token: {result.get('error_description')}"
+        logger.critical(error_msg)
+        raise RuntimeError(error_msg)
+        
+    return result["access_token"]
 
-    return app
-
-
-def build_azuresentinel_feed(feed_item, feed_name):
-    regex_ipv4 = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
-    regex_md5 = re.compile(r"^([a-fA-F\d]{32})$")
-    regex_sha1 = re.compile(r"^([a-fA-F\d]{40})$")
-    regex_sha256 = re.compile(r"^([a-fA-F\d]{64})$")
-    expire_date = datetime.utcnow() + timedelta(expire_date_offset) # get utc time for now
+def build_azuresentinel_feed(feed_item: dict, feed_name: str) -> dict | None:
+    """Builds a single Azure Sentinel threat indicator object, with validation."""
     ioc = feed_item.get('feed')
     if not ioc:
+        logger.warning("Skipping feed item with no 'feed' value.")
         return None
+    
     ioc_type = feed_item.get('feed_type', 'unknown')
-    ioc_source = feed_item.get('maintainer_name', '')
+    ioc_source = feed_item.get('maintainer_name', 'Unknown')
+    expire_date = datetime.utcnow() + timedelta(days=EXPIRE_DATE_OFFSET)
+    
     azuresentinel_feed = {
-        "action": "alert", # unknown, allow, block, alert
-        "azureTenantId": azure_tenant_id, #string, Azure Active Directory tenant id of submitting client
+        "action": "alert",
+        "azureTenantId": AZURE_TENANT_ID,
         "tags": ["SOCRadar"],
-        "description": f"{feed_name} - {ioc_source}", # Brief description (100 characters or less)
-        "expirationDateTime": f"{expire_date.isoformat()}Z", #string isoformat, add Z for utc, # DateTime string indicating when the Indicator expires.2014-01-01T00:00:00Z
-        "targetProduct": "Azure Sentinel", # Azure Sentinel, Microsoft Defender ATP
-        "threatType": "WatchList", # Botnet, C2, CryptoMining, Darknet, DDoS, MaliciousUrl, Malware, Phishing, Proxy, PUA, WatchList
-        "tlpLevel": "amber", # unknown, white, green, amber, red
+        "description": f"{feed_name} - {ioc_source}"[:100],
+        "expirationDateTime": f"{expire_date.isoformat()}Z",
+        "targetProduct": "Azure Sentinel",
+        "threatType": "WatchList",
+        "tlpLevel": "amber",
     }
+    
     if ioc_type == "ip":
-        if bool(re.match(regex_ipv4, ioc)):
+        if REGEX_IPV4.match(ioc):
             azuresentinel_feed['networkIPv4'] = ioc
         else:
+            # Assuming it's an IPv6 if not IPv4, but this could be more specific
             azuresentinel_feed['networkIPv6'] = ioc
     elif ioc_type == 'hash':
         azuresentinel_feed['fileHashValue'] = ioc
-        if bool(re.match(regex_md5, ioc)):
+        if REGEX_MD5.match(ioc):
             azuresentinel_feed['fileHashType'] = 'md5'
-        elif bool(re.match(regex_sha1, ioc)):
+        elif REGEX_SHA1.match(ioc):
             azuresentinel_feed['fileHashType'] = 'sha1'
-        elif bool(re.match(regex_sha256, ioc)):
+        elif REGEX_SHA256.match(ioc):
             azuresentinel_feed['fileHashType'] = 'sha256'
         else:
+            logger.warning(f"Invalid hash format for IOC: {ioc}")
             return None
     elif ioc_type == 'hostname':
         azuresentinel_feed['domainName'] = ioc
     elif ioc_type == 'url':
         azuresentinel_feed['url'] = ioc
     else:
+        logger.warning(f"Unsupported IOC type: {ioc_type} for IOC: {ioc}")
         return None
-
+        
     return azuresentinel_feed
 
+def remove_old_files(threatfeed_folder: str, threshold_days: int):
+    if not os.path.isdir(threatfeed_folder):
+        logger.warning(f"Threat feed folder not found: {threatfeed_folder}")
+        return
+
+    remove_timestamp_threshold = datetime.now() - timedelta(days=threshold_days)
+    
+    for file_name in os.listdir(threatfeed_folder):
+        file_path = os.path.join(threatfeed_folder, file_name)
+        if not os.path.isfile(file_path):
+            continue
+            
+        try:
+            mod_timestamp = datetime.fromtimestamp(os.path.getmtime(file_path))
+            if mod_timestamp < remove_timestamp_threshold:
+                os.remove(file_path)
+                logger.info(f"Removed old file: {file_path}")
+        except Exception as e:
+            logger.warning(f"Could not process file {file_path} for removal: {e}")
+
 def main():
-    def get_file_name():
-        today = datetime.today().strftime('%Y-%m-%d')
-        return f'SOCRadar-Threat-Feed_{today}.json'
-
-    def format_feeds_json_text(text, collection_name):
-        return_formatted_feeds = ''
-        feeds = json.loads(text)
-        if type(feeds) is list:
-            feeds = [{key: value for key, value in {**feed, 'collection_name': collection_name}.items() if key != 'extra_info'} for feed in feeds]
-            return_formatted_feeds = '\n'.join([json.dumps(feed) for feed in feeds])
-        return f"{return_formatted_feeds}\n"
-
-    def remove_old_files(threatfeed_folder, threshold_day_count):
-        if type(threshold_day_count) != int:
-            try:
-                threshold_day_count = int(threshold_day_count)
-            except:
-                threshold_day_count = 5
-        if threshold_day_count > 0:
-            threatfeed_file_paths = [
-                f'{threatfeed_folder}/{date_folder_name}' for date_folder_name in os.listdir(threatfeed_folder)
-                if os.path.isfile(f'{threatfeed_folder}/{date_folder_name}')]
-            remove_datetime_threshold = datetime.today() - timedelta(days=threshold_day_count)
-            for threatfeed_file_path in threatfeed_file_paths:
-                try:
-                    date_str = threatfeed_file_path.split('_')[-1].split('.')[0]
-                    threatfeed_file_datetime = datetime.strptime(date_str, "%Y-%m-%d")
-                except:
-                    continue
-                if threatfeed_file_datetime.date() <= remove_datetime_threshold.date():
-                    os.remove(threatfeed_file_path)
-    socradar_threat_feed_folder = os.environ.get('SOCRADAR_THREAT_FEED_INTEGRATION_FOLDER', './Threats-SOCRadar')
-    remove_file_threshold_day = os.environ.get('SOCRADAR_THREAT_FEED_OLD_FILE_REMOVAL_THRESHOLD', 5)
-    os.makedirs(socradar_threat_feed_folder, exist_ok=True)
-    logging.basicConfig()
-    logger = logging.getLogger('socradar_threat_feed_integration_logger')
-    logger.setLevel(logging.DEBUG)
-    file_name = get_file_name()
-    file_path_to_save = f'{socradar_threat_feed_folder}/{file_name}.log'
     threatfeed_collection_dict = {
         "e89ab3b58e174b8c82767088d8e66cae": "SOCRadar-Attackers-Recommended-Block-IP",
         "9079dcc2f96e4835bb807026d4cdcc86": "SOCRadar-APT-Recommended-Block-Domain",
@@ -126,103 +139,76 @@ def main():
         "03cc11380b5d4a77a0d0cc2a7c568230": "SOCRadar-Recommended-Phishing-Global",
         "8742cab86cc4414092217f87298e94a1": "SOCRadar-Recommended-Block-Hash",
     }
-    # get access token for graph api
-    # The pattern to acquire a token looks like this.
-    result = None
-    headers = ''
-    graph_api_token = ""
 
-    # # Firstly, looks up a token from cache
-    # # Since we are looking for token for the current app, NOT for an end user,
-    # # notice we give account parameter as None.
-    app = get_graph_api_acess_token()
-    result = app.acquire_token_silent(scope, account=None)
-    if not result:
-        logging.info("No suitable token exists in cache. Let's get a new one from AAD.")
-        result = app.acquire_token_for_client(scopes=scope)
-    if "access_token" in result:
-        graph_api_token = result["access_token"]
+    # Ensure the threat feed folder exists with a secure mode.
+    try:
+        os.makedirs(THREAT_FEED_FOLDER, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Failed to create directory {THREAT_FEED_FOLDER}: {e}")
+        return
+
+    try:
+        graph_api_token = get_graph_api_access_token()
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {graph_api_token}"
         }
-    else:
-        logger.warning("No suitable token exists. Terminating the script.")
-        logger.warning(result.get("error"))
-        logger.warning(result.get("error_description"))
-        logger.warning(result.get("correlation_id"))  # You may need this when reporting a bug
-        quit()
-    for threatfeed_uuid, threatfeed_name in threatfeed_collection_dict.items():
-        #if threatfeed_name == "SOCRadar-Recommended-Phishing-Global":
-        print(threatfeed_name)
-        try:
-            socradar_threat_feed_response = requests.get(f'https://platform.socradar.com/api/threat/intelligence/feed_list/{threatfeed_uuid}.json?key={socradar_api_key}&v=2')
-            if socradar_threat_feed_response.status_code < 400:
-                file_path_to_save = f'{socradar_threat_feed_folder}/{threatfeed_name}.log'
+    except Exception as e:
+        logger.critical(f"Script could not start due to authentication failure: {e}")
+        return
+
+    # Use a session for persistent connections and header management
+    with requests.Session() as session:
+        session.headers.update(headers)
+        
+        for threatfeed_uuid, threatfeed_name in threatfeed_collection_dict.items():
+            logger.info(f"Processing threat feed: {threatfeed_name}")
+            
+            try:
+                socradar_url = f'https://platform.socradar.com/api/threat/intelligence/feed_list/{threatfeed_uuid}.json'
+                params = {'key': SOCRADAR_API_KEY, 'v': 2}
+                
+                socradar_response = session.get(socradar_url, params=params, verify=VERIFY_SSL, timeout=30)
+                socradar_response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+                
+                # Process the fetched data
+                threat_data = socradar_response.json()
                 azuresentinel_feed_list = []
-                count = 0
-                threat_chunk_count = int(len(socradar_threat_feed_response.json())/100) + 1
-                #print(len(socradar_threat_feed_response.json()))
-                #print(threat_chunk_count)
-                for feed_item in socradar_threat_feed_response.json():
+                
+                for feed_item in threat_data:
                     azuresentinel_feed = build_azuresentinel_feed(feed_item, threatfeed_name)
                     if azuresentinel_feed:
                         azuresentinel_feed_list.append(azuresentinel_feed)
-                    if len(azuresentinel_feed_list) == 100:
-                        count += 1
-                        azuresentinel_feed_dict_to_submit = { 'value' : azuresentinel_feed_list }
-                        '''
-                        azuresentinel_feed_file_path = f"{socradar_threat_feed_folder}/{threatfeed_name}-{count}.log"
-                        with open(azuresentinel_feed_file_path, 'w') as f:
-                            f.write(json.dumps(azuresentinel_feed_dict_to_submit, indent=2))
-                        '''
-                        payload = json.dumps(azuresentinel_feed_dict_to_submit)
-                        response = requests.post(f"https://{graph_server}/beta/security/tiIndicators/submitTiIndicators", headers=headers, data=payload, verify=verify_ssl)
-                        if response.status_code == 200:
-                            logger.info(f'{threatfeed_name} has been fetched from SOCRadar and chunk {count} has submitted to Azure Sentinel: {response.url}')
-                            logger.info(f'Status Code: \n{response.status_code}')
-                            logger.info(f'Url: \n{response.url}')
-                        else:
-                            logger.info(f'{threatfeed_name} has been fetched from SOCRadar and error on chunk {count} submission to Azure Sentinel')
-                            logger.info(f'Status Code: \n{response.status_code}')
-                            logger.info(f'Url: \n{response.url}')
-                            logger.info(f'Response: \n{response.text}')
-                        azuresentinel_feed_list = []
-                # to get the residual feeds counted below 100
-                if count < threat_chunk_count:
-                    count += 1
-                    azuresentinel_feed_dict_to_submit = { 'value' : azuresentinel_feed_list }
-                    #print(len(azuresentinel_feed_list))
-                    '''
-                    azuresentinel_feed_file_path = f"{socradar_threat_feed_folder}/{threatfeed_name}-{count}.log"
-                    with open(azuresentinel_feed_file_path, 'w') as f:
-                        f.write(json.dumps(azuresentinel_feed_dict_to_submit, indent=2))
-                    '''
-                    payload = json.dumps(azuresentinel_feed_dict_to_submit)
-                    response = requests.post(f"https://{graph_server}/beta/security/tiIndicators/submitTiIndicators", headers=headers, data=payload, verify=verify_ssl)
+                        
+                # Batch submission to Azure Sentinel
+                chunk_size = 100
+                for i in range(0, len(azuresentinel_feed_list), chunk_size):
+                    chunk = azuresentinel_feed_list[i:i + chunk_size]
+                    payload = json.dumps({'value': chunk})
+                    
+                    graph_url = f"https://{GRAPH_SERVER}/beta/security/tiIndicators/submitTiIndicators"
+                    response = session.post(graph_url, data=payload, verify=VERIFY_SSL, timeout=30)
+                    
                     if response.status_code == 200:
-                        logger.info(f'{threatfeed_name} has been fetched from SOCRadar and chunk {count} has submitted to Azure Sentinel: {response.url}')
-                        logger.info(f'Status Code: \n{response.status_code}')
-                        logger.info(f'Url: \n{response.url}')
+                        logger.info(f'Successfully submitted chunk {i//chunk_size + 1} for {threatfeed_name}.')
                     else:
-                        logger.info(f'{threatfeed_name} has been fetched from SOCRadar and error on chunk {count} submission to Azure Sentinel')
-                        logger.info(f'Status Code: \n{response.status_code}')
-                        logger.info(f'Url: \n{response.url}')
-                        logger.info(f'Response: \n{response.text}')
+                        logger.error(f'Failed to submit chunk {i//chunk_size + 1} for {threatfeed_name}. Status Code: {response.status_code}, Response: {response.text}')
+                        
+                file_path_to_save = os.path.join(THREAT_FEED_FOLDER, f"{threatfeed_name}_{datetime.today().strftime('%Y-%m-%d')}.json")
+                with open(file_path_to_save, 'w') as f:
+                    json.dump(threat_data, f, indent=2)
+                logger.info(f'Fetched {threatfeed_name} and saved to: {file_path_to_save}')
 
-                with open(file_path_to_save, 'w') as threat_file:
-                    threat_file.write(json.dumps(socradar_threat_feed_response.json(), indent=2))
-                logger.info(f'{threatfeed_name} has been fetched from SOCRadar and saved to: {file_path_to_save}')
-            elif socradar_threat_feed_response.status_code == 429:
-                logger.info('API rate limit exceeded.')
-            else:
-                logger.info('Could not get response from SOCRadar API.')
-        except KeyboardInterrupt as e:
-            logger.info('Keyboard interrupt is taken, stopping SOCRadar threat feed integration.')
-        except:
-            logger.exception('Exception at SOCRadar threat feed integration.')
-    else:
-        remove_old_files(socradar_threat_feed_folder, remove_file_threshold_day)
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"HTTP error for {threatfeed_name}: {e}")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Network error for {threatfeed_name}: {e}")
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse JSON response for {threatfeed_name}.")
+            except Exception as e:
+                logger.exception(f"An unexpected error occurred while processing {threatfeed_name}: {e}")
+        
+    remove_old_files(THREAT_FEED_FOLDER, OLD_FILE_REMOVAL_THRESHOLD)
 
 if __name__ == '__main__':
     main()
