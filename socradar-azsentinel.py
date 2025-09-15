@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta
 import msal
 from dotenv import load_dotenv
+from typing import Optional
 
 # Load environment variables from a .env file
 load_dotenv()
@@ -60,7 +61,7 @@ def get_graph_api_access_token():
         
     return result["access_token"]
 
-def build_azuresentinel_feed(feed_item: dict, feed_name: str) -> dict | None:
+def build_azuresentinel_feed(feed_item: dict, feed_name: str) -> Optional[dict]:
     """Builds a single Azure Sentinel threat indicator object, with validation."""
     ioc = feed_item.get('feed')
     if not ioc:
